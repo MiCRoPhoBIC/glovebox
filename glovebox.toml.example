@@ -1,0 +1,152 @@
+# glovebox configuration
+#
+# Every setting below is commented out and shows its default. Copy this file to
+# one of these places and uncomment only what you change (the first found is
+# used):
+#
+#   1. the file named by $GLOVEBOX_CONFIG
+#   2. glovebox.toml next to the glovebox command (git-ignored)
+#   3. ~/.config/glovebox/config.toml (or $XDG_CONFIG_HOME/glovebox/)
+#
+# Without a file the defaults apply. An unknown setting or a wrong type is an
+# error. TOML has no null: settings marked "off" take "" to turn them off.
+# Format: https://toml.io
+
+# --- Per-VM defaults (create --memory/--vcpus/--disk override them) ----------
+
+#memory = 1024          # MiB
+#vcpus = 1
+#disk = "20G"
+
+# --- Accounts in the guest ----------------------------------------------------
+
+# Your login/sudo account (administration). Per VM: create --user NAME.
+#user = "user"
+
+# The account for the AI agent and other untrusted work: no sudo, no password
+# (SSH in with the same key). --claude and --provision set it up. Kept apart
+# from `user` so the agent can't capture your sudo password (e.g. with a sudo
+# alias in ~/.bashrc) and become root in the guest, which most VM escapes need.
+# Per VM: create --agent-user NAME. create records both names in the VM's
+# libvirt metadata; check reads them from there.
+# "" (off): everything runs as `user` (not recommended).
+#agent_user = "agent"
+
+# Your public SSH key, installed for both accounts.
+# "" (default): ~/.ssh/id_ed25519.pub, id_rsa.pub or id_ecdsa.pub, the first
+# found; if none, create lists the other *.pub keys there and asks.
+#ssh_key = ""
+
+# Console/sudo password of `user`. "" (default): prompted for at create. A
+# value here is stored in the clear; $GLOVEBOX_PASSWORD is the alternative.
+#password = ""
+
+# --- Guest image ----------------------------------------------------------------
+
+#image_url = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+# Must describe image_url (osinfo-query os); an osinfo-db from before 2025
+# lacks debian13, use "debian12" there.
+#osinfo = "debian13"
+#image_dir = "/var/lib/libvirt/images"
+
+# Optional list of extra Debian packages create installs in every new VM on
+# first boot (apt-get, before --provision). Relative to this file (to the repo
+# without a config file). One package per line or several per line separated
+# by spaces; # starts a comment. If the file doesn't exist, nothing extra is
+# installed; see glovebox-packages.txt.example. Per VM: create --packages FILE.
+# "" (off): never look for one.
+#packages_file = "glovebox-packages.txt"
+
+# Start VMs at host boot.
+#autostart = false
+
+# --- DNS (direct-internet VMs) --------------------------------------------------
+
+# DNS servers that direct-internet VMs use (written into their network config).
+# Proxy-only VMs get none: the proxy resolves names for them.
+# - A public server (the default) just works: these VMs reach the internet.
+# - A server on a private address (your router, a Pi-hole, a resolver on the
+#   host) is blocked like every private address. To use one, also add its IP
+#   to the private_dns set in host-setup/nftables/glovebox.conf, which opens
+#   port 53 to it for direct-internet VMs, and run
+#   `./glovebox host-setup nftables`. create refuses a private server that
+#   isn't in private_dns.
+#nameservers = ["1.1.1.1", "1.0.0.1"]   # Cloudflare
+#nameservers = ["192.168.1.1"]          # a LAN resolver: also in private_dns
+
+# --- Proxy (proxy-only VMs) ------------------------------------------------------
+
+# The outbound HTTP(S) proxy on the host (Squid on the bridge address). A
+# proxy-only VM gets the proxy variables in /etc/environment, an apt proxy
+# config, and proxy_ca in its trust store. Must match PROXY_ADDR/PROXY_PORT in
+# host-setup/nftables/glovebox.conf. "" (off): no proxy; create then refuses
+# proxy-only VMs.
+#proxy = "http://10.248.0.254:3128"
+
+# Hosts that bypass the proxy (NO_PROXY/no_proxy in the guest).
+#no_proxy = "localhost,127.0.0.1,::1"
+
+# Public certificate of the proxy's TLS-inspection CA, read on the host (via
+# sudo) and installed in the guest. Never the file holding the private key.
+# "" (off): no CA is installed (e.g. a proxy without ssl_bump).
+#proxy_ca = "/etc/squid/ssl_cert/sandboxCA.crt"
+
+# How many days the CA host-setup creates is valid. Only used when it creates
+# one: an existing CA is kept (the proxy-only VMs trust it). To renew it,
+# delete /etc/squid/ssl_cert/sandboxCA.{pem,crt}, re-run `./glovebox
+# host-setup squid`, and recreate the proxy-only VMs.
+#proxy_ca_days = 3650   # 10 years
+
+# Squid's domain allowlist (read via sudo). check fetches every entry through
+# the proxy from a proxy-only VM. "" (off): skip that.
+#proxy_allowed_domains = "/etc/squid/allowed_domains.txt"
+
+# Squid's provisioning allowlist (package mirrors, installers), open only while
+# setting sandboxes up. check fetches its entries too, and warns while any are
+# open. "" (off): no such file.
+#proxy_provision_domains = "/etc/squid/provision_domains.txt"
+
+# Squid's access log (default "squid" format), read via sudo by squid-denied.
+#proxy_access_log = "/var/log/squid/access.log"
+
+# --- check ------------------------------------------------------------------------
+
+# TCP and UDP ports check probes on each private address. Any answer (open or
+# closed) from a service the configuration doesn't allow fails the check.
+#check_tcp_ports = "21-23,53,80,111,139,443,445,631,1433,2049,2375-2376,3000,3306,3389,5000-5001,5173,5432,5900,5985,6379,6443,8000,8006,8080,8443,8888,9000,9090,9100,9200,10250,11211,16509,27017"
+#check_udp_ports = "53,67-69,111,123,137,161,500,514,623,1900,4500,5353,51820"
+
+# Domains outside the proxy allowlist that check expects the proxy to deny
+# (entries the allowlist does cover are skipped).
+#check_denied_domains = ["example.com", "github.com", "pypi.org"]
+
+# Public IPs check probes to show that proxy-only VMs reach nothing on the
+# internet directly.
+#check_public_targets = ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+
+# Private ranges check treats as must-be-unreachable: RFC1918, loopback,
+# link-local, CGNAT (Tailscale). Add any overlay/VPN range you run; keep it in
+# step with PRIVATE_NET in host-setup/nftables/glovebox.conf.
+#check_private_nets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10"]
+
+# --- Host topology -----------------------------------------------------------------
+
+# Change these only if your host deviates from the files in host-setup/; they
+# must match (host-setup checks). host_address is the host's bridge address in
+# host-setup/libvirt-net/glovebox.xml: the VMs' gateway, and its prefix is the
+# sandbox subnet.
+#host_address = "10.248.0.254/24"
+#bridge = "br-glovebox"
+
+# --- Claude Code (create --claude) ---------------------------------------------
+
+# Variables --claude writes into /etc/environment and ~/.claude/settings.json
+# (env) in the guest, on top of the proxy ones on a proxy-only VM. Telemetry,
+# error reporting and /bug off; CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1"
+# would cover these and also turn off the autoupdater. Setting it replaces the
+# whole table. It stays last here: in TOML everything after a [table]
+# header belongs to that table.
+#[claude_env]
+#DISABLE_TELEMETRY = "1"
+#DISABLE_ERROR_REPORTING = "1"
+#DISABLE_BUG_COMMAND = "1"

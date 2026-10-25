@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+
+# glovebox: hardened, network-contained KVM sandboxes for AI agents.
+# Copyright (C) 2026 MiCRoPhoBIC
+# Derived from kvm-sandbox, Copyright (c) 2026 Ertuğ Karamatlı, under the
+# MIT License (see LICENSE.MIT); modified by MiCRoPhoBIC in October 2026.
+# Licensed under the GNU GPL v3 or later; see LICENSE.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+import argparse
+import shlex
+import subprocess
+
+from gloveboxlib import __version__
+from gloveboxlib.config import config
+from gloveboxlib import (check, hostcheck, hostsetup, manage, squid,
+                         uninstall, vms)
+from gloveboxlib.common import (die, log, require_not_root, resolve_ip,
+                                resolve_subnet, validate_name)
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Manage and check network-restricted and hardened KVM "
+                    "sandboxes.",
+    )
+    p.add_argument("--version", action="version",
+                   version=f"glovebox {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+    name_help = ("VM name: 'sandbox<n>' or 'sandbox<n>-<label>'. <n> sets "
+                 "the IP (sandbox5 -> .5, sandbox6-my-project -> .6).")
+
+    c = sub.add_parser("create", help="create a sandbox VM")
+    c.set_defaults(run=manage.cmd_create)
+    c.add_argument("name", help=name_help)
+    c.add_argument("--memory", type=int, default=config.memory,
+                   help=f"MiB (default: {config.memory})")
+    c.add_argument("--vcpus", type=int, default=config.vcpus,
+                   help=f"default: {config.vcpus}")
+    c.add_argument("--disk", default=config.disk,
+                   help=f"Disk size (default: {config.disk})")
+    c.add_argument("--user", default=config.user, metavar="NAME",
+                   help=f"login account with sudo (default: {config.user})")
+    c.add_argument("--agent-user", default=config.agent_user, metavar="NAME",
+                   help=f"agent account without sudo (default: "
+                        f"{config.agent_user})")
+    c.add_argument("--packages", metavar="FILE",
+                   help=f"optional list of extra Debian packages to install "
+                        f"in the VM on first boot, one or more per line "
+                        f"(default: {config.packages_file} next to "
+                        f"the config, if it exists; see "
+                        f"glovebox-packages.txt.example)")
+    c.add_argument("--provision", metavar="EXECUTABLE",
+                   help="host executable copied into the VM and run once on "
+                        "first boot, after the packages and Claude Code "
+                        "(e.g. a script installing dev tools); see "
+                        "--provision-as")
+    c.add_argument("--provision-as", choices=("root", "user", "agent"),
+                   default="root",
+                   help="the account --provision runs as, in its home "
+                        "directory with /etc/environment loaded (default: "
+                        "root)")
+    c.add_argument("--claude", action="store_true",
+                   help="install Claude Code for the agent account (else the "
+                        "login account) and set it up: claude_env from the "
+                        "config (telemetry off), plus the proxy variables "
+                        "and NODE_EXTRA_CA_CERTS on a proxy-only VM, in "
+                        "/etc/environment and its ~/.claude/settings.json; "
+                        "~/.local/bin on its PATH")
+
+    d = sub.add_parser("delete",
+                       help="delete a sandbox VM and its disk and seed files")
+    d.set_defaults(run=manage.cmd_delete)
+    d.add_argument("name", help=name_help)
+
+    ls = sub.add_parser("list", help="list the sandbox VMs with their "
+                                     "state, IP, mode and accounts")
+    ls.set_defaults(run=vms.cmd_list)
+
+    s = sub.add_parser("start", help="start (or resume) a sandbox VM, after "
+                                     "checking glovebox's firewall rules "
+                                     "are loaded")
+    s.set_defaults(run=vms.cmd_start)
+    s.add_argument("name", help=name_help)
+
+    t = sub.add_parser("stop", help="shut a sandbox VM down cleanly and wait "
+                                    "for it")
+    t.set_defaults(run=vms.cmd_stop)
+    t.add_argument("name", help=name_help)
+    t.add_argument("--timeout", type=int, default=120, metavar="SECONDS",
+                   help="how long to wait for the shutdown (default: 120)")
+    t.add_argument("--force", action="store_true",
+                   help="power it off at once (like pulling the plug; "
+                        "unsaved data in the VM is lost)")
+
+    k = sub.add_parser("check", help="test that a sandbox VM cannot reach "
+                                     "private addresses")
+    k.set_defaults(run=check.cmd_check)
+    k.add_argument("name", help=name_help)
+    k.add_argument("--install-tools", action="store_true",
+                   help="install nmap and curl in the VM (via apt-get) "
+                        "before probing")
+
+    q = sub.add_parser("squid-denied",
+                       help="list what the proxy (Squid) refused a sandbox "
+                            "VM, i.e. what its allowlists lack")
+    q.set_defaults(run=squid.cmd_squid_denied)
+    q.add_argument("name", help=name_help)
+
+    h = sub.add_parser("host-setup",
+                       help="set up the host side: QEMU/KVM and libvirt, "
+                            "the libvirt network, nftables rules, Squid "
+                            "(shows the plan and asks first); in UFW only "
+                            "rules on the bridge")
+    h.set_defaults(run=hostsetup.cmd_host_setup)
+    h.add_argument("parts", nargs="+", metavar="PART",
+                   choices=hostsetup.PARTS + ("all",),
+                   help="virt, network, nftables, squid, ufw (bridge rules only), "
+                        "or all")
+    h.add_argument("--dry-run", action="store_true",
+                   help="show the plan only, change nothing")
+
+    hc = sub.add_parser("host-check",
+                        help="check that the host is set up as glovebox "
+                             "expects, now and after a reboot, and what "
+                             "else on it may block the sandboxes "
+                             "(read-only)")
+    hc.set_defaults(run=hostcheck.cmd_host_check)
+    hc.add_argument("--probe", action="store_true",
+                    help="also send test traffic through the host's real "
+                         "firewalls from a temporary network namespace on "
+                         "the bridge, one address per egress mode (removed "
+                         "afterwards); no VM needed")
+
+    u = sub.add_parser("uninstall",
+                       help="undo every host change host-setup recorded, "
+                            "newest first (shows the plan and asks first; "
+                            "the packages are asked about separately)")
+    u.set_defaults(run=uninstall.cmd_uninstall)
+    u.add_argument("--dry-run", action="store_true",
+                   help="show the plan only, change nothing")
+
+    return p.parse_args()
+
+
+def main():
+    require_not_root()
+    a = parse_args()
+    if a.command in ("host-setup", "host-check", "uninstall", "list"):
+        a.run(a)
+        return
+    n = validate_name(a.name)
+
+    if a.command not in ("delete", "stop"):
+        a.subnet, a.gateway = resolve_subnet(config)
+        a.ip = resolve_ip(n, a.subnet, a.gateway)
+        log(f"IP {a.ip} (from '{a.name}').")
+
+    a.run(a)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except subprocess.CalledProcessError as e:
+        die(f"Command failed (exit {e.returncode}): {shlex.join(e.cmd)}")
+    except KeyboardInterrupt:
+        die("Interrupted.", code=130)
+    except EOFError:
+        die("Input closed.", code=130)

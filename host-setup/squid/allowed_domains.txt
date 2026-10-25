@@ -1,0 +1,19 @@
+# Domains proxy-only sandboxes may always reach (Squid dstdomain): "host" is
+# that host only, ".example.com" the domain and all its subdomains; keep
+# entries narrow. Apply changes with `sudo squid -k reconfigure`.
+#
+# WARNING: Squid runs on the host, so glovebox's firewall doesn't filter
+# where it connects. Whatever address an allowed name resolves to, Squid
+# connects there for the sandbox, including your LAN and the host itself.
+# Allow only domains whose DNS you trust. Never allow a domain where anyone
+# can create names and choose their addresses (e.g. nip.io or sslip.io,
+# where 192.168.1.1.nip.io resolves to 192.168.1.1, or a wildcard over a
+# hosting service): a sandbox could then reach any LAN address through the
+# proxy.
+
+# Claude Code (create --claude): API, login (OAuth), installer and updates.
+# host-setup squid adds any of these that are missing.
+api.anthropic.com
+claude.ai
+platform.claude.com
+downloads.claude.ai

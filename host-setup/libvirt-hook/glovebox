@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# glovebox: hardened, network-contained KVM sandboxes for AI agents.
+# Copyright (C) 2026 MiCRoPhoBIC
+# Licensed under the GNU GPL v3 or later; see LICENSE.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# libvirt QEMU hook (/etc/libvirt/hooks/qemu.d/glovebox): refuses to start a
+# sandbox VM while glovebox's nftables tables aren't loaded. The libvirt
+# network adds no rules of its own (forward mode='open'), so without them
+# nothing would filter what the VM reaches. This covers what `glovebox
+# start` can't: autostart at boot, `virsh start`, virt-manager.
+#
+# libvirt runs it as root with: <domain> <operation> <sub-operation>, and
+# the domain XML on stdin. Other VMs (no glovebox metadata) pass untouched.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+[ "$2" = prepare ] && [ "$3" = begin ] || exit 0
+
+# Read all of stdin, so libvirt never writes into a closed pipe.
+xml=$(cat)
+case $xml in
+    *urn:glovebox*) ;;
+    *) exit 0 ;;
+esac
+
+for family in inet ip bridge; do
+    if ! nft list table "$family" glovebox >/dev/null 2>&1; then
+        echo "glovebox: nftables table '$family glovebox' is not loaded;" \
+             "refusing to start $1 on an unfiltered bridge. Load the rules:" \
+             "sudo systemctl restart glovebox-nftables.service" >&2
+        exit 1
+    fi
+done
+exit 0

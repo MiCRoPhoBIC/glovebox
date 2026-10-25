@@ -1,0 +1,12 @@
+# Extra Debian packages `glovebox create` installs in every new VM on first
+# boot (apt-get, before --provision). Optional: copy this file to
+# glovebox-packages.txt (next to the config) and edit it, or pass another
+# file with `create --packages FILE`. Without one, nothing extra is installed.
+#
+# One package per line, or several on a line separated by spaces; # starts a
+# comment. On a proxy-only VM apt goes through Squid, so its mirror
+# (deb.debian.org) must be open in /etc/squid/provision_domains.txt.
+
+git
+tmux vim
+build-essential python3-venv

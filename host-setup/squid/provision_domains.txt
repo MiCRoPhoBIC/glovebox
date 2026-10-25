@@ -1,0 +1,10 @@
+# Domains open to proxy-only sandboxes only while provisioning (create
+# --provision and extra packages, check --install-tools; Claude Code's are
+# in allowed_domains.txt). Comment them out (the file must stay)
+# and run `sudo squid -k reconfigure` when done. `glovebox squid-denied
+# <name>` lists what Squid refused a VM, i.e. what's missing here. The
+# warning in allowed_domains.txt applies here too: allow only domains whose
+# DNS you trust.
+
+# Debian packages (apt; the cloud image's sources, incl. security updates)
+deb.debian.org

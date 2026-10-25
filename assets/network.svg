@@ -1,0 +1,121 @@
+<!-- glovebox: hardened, network-contained KVM sandboxes for AI agents.
+     Copyright (C) 2026 MiCRoPhoBIC. SPDX-License-Identifier: GPL-3.0-or-later
+     Hand-written SVG: edit the text, then check it renders (e.g. rsvg-convert). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="922" viewBox="0 0 1100 922" font-family="Helvetica, Arial, 'DejaVu Sans', sans-serif">
+  <title>glovebox network: what a sandbox VM can reach</title>
+  <style>
+    .t { font-size: 17px; fill: #222; }
+    .s { font-size: 14px; fill: #444; }
+    .b { font-weight: bold; }
+    .ok { stroke: #2e7d32; stroke-width: 3; fill: none; }
+    .opt { stroke: #2e7d32; stroke-width: 3; fill: none; stroke-dasharray: 9 6; }
+    .no { stroke: #d32f2f; stroke-width: 3; fill: none; stroke-dasharray: 3 5; }
+    .lbl { font-size: 14px; fill: #222; }
+    .okl { fill: #1b5e20; }
+    .nol { fill: #b71c1c; }
+  </style>
+  <defs>
+    <marker id="aok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker>
+    <g id="x"><path d="M-9,-9 L9,9 M9,-9 L-9,9" stroke="#d32f2f" stroke-width="4"/></g>
+  </defs>
+
+  <rect width="1100" height="922" fill="#fff"/>
+
+  <!-- Outside: internet and private networks -->
+  <ellipse cx="300" cy="75" rx="170" ry="50" fill="#eef2f7" stroke="#5a6b84" stroke-width="2.5"/>
+  <text x="300" y="70" class="t b" text-anchor="middle">Internet</text>
+  <text x="300" y="93" class="s" text-anchor="middle">(public addresses)</text>
+
+  <rect x="620" y="22" width="440" height="110" rx="10" fill="#fde4e4" stroke="#d32f2f" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="840" y="55" class="t b" text-anchor="middle">Your LAN and other private addresses</text>
+  <text x="840" y="80" class="s" text-anchor="middle">router · NAS · databases · mail · VPNs · other VMs</text>
+  <text x="840" y="102" class="s" text-anchor="middle">cloud metadata · RFC 1918 · CGNAT · link-local</text>
+
+  <!-- Host -->
+  <rect x="40" y="185" width="1020" height="400" rx="12" fill="#dbe9fd" stroke="#4a90e2" stroke-width="2.5"/>
+  <text x="640" y="212" class="t b">Host</text>
+  <text x="690" y="212" class="s">· your credentials and files</text>
+  <text x="640" y="232" class="s">10.248.0.254 on the bridge br-glovebox</text>
+
+  <rect x="80" y="250" width="300" height="105" rx="8" fill="#fff" stroke="#4a6fa5" stroke-width="2"/>
+  <text x="230" y="282" class="t b" text-anchor="middle">Squid proxy :3128</text>
+  <text x="230" y="307" class="s" text-anchor="middle">domain allowlists</text>
+  <text x="230" y="328" class="s" text-anchor="middle">TLS inspection · no caching</text>
+
+  <rect x="420" y="250" width="180" height="105" rx="8" fill="#fff" stroke="#4a6fa5" stroke-width="2"/>
+  <text x="510" y="295" class="t b" text-anchor="middle">NAT</text>
+  <text x="510" y="318" class="s" text-anchor="middle">via the host</text>
+
+  <rect x="640" y="250" width="250" height="105" rx="8" fill="#fde4e4" stroke="#d32f2f" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="765" y="282" class="t b" text-anchor="middle">Host services</text>
+  <text x="765" y="307" class="s" text-anchor="middle">SSH, databases, Docker API…</text>
+  <text x="765" y="328" class="s" text-anchor="middle">closed to the VMs</text>
+
+  <!-- Paths from the VMs (drawn under the firewall bar: they pass through it) -->
+  <path d="M170,640 L170,355" class="ok" marker-end="url(#aok)"/>
+  <path d="M690,640 L560,355" class="ok" marker-end="url(#aok)"/>
+  <path d="M990,640 L990,132" class="opt" marker-end="url(#aok)"/>
+  <path d="M990,390 L893,340" class="opt" marker-end="url(#aok)"/>
+  <path d="M380,640 L380,485" class="no"/>
+  <path d="M820,640 L820,485" class="no"/>
+
+  <!-- Onward from the host to the internet -->
+  <path d="M200,250 L240,125" class="ok" marker-end="url(#aok)"/>
+  <path d="M480,250 L400,118" class="ok" marker-end="url(#aok)"/>
+  <text x="252" y="158" class="lbl okl">allowlisted</text>
+  <text x="252" y="176" class="lbl okl">domains only</text>
+
+  <!-- Firewall -->
+  <rect x="60" y="415" width="980" height="70" rx="8" fill="#37474f"/>
+  <text x="550" y="443" class="t b" text-anchor="middle" style="fill:#fff">Firewall: nftables (glovebox tables, bridge traffic only) + libvirt clean-traffic</text>
+  <text x="550" y="468" class="s" text-anchor="middle" style="fill:#e0e0e0">decides by the VM's pinned source IP · fail-closed: anything not allowed is dropped</text>
+  <use href="#x" x="380" y="497"/>
+  <use href="#x" x="820" y="497"/>
+
+  <!-- Labels on the paths -->
+  <text x="182" y="527" class="lbl okl">HTTP(S) to</text>
+  <text x="182" y="545" class="lbl okl">the proxy only</text>
+  <text x="392" y="560" class="lbl nol">direct internet,</text>
+  <text x="392" y="578" class="lbl nol">DNS: dropped</text>
+  <text x="568" y="560" class="lbl okl">internet</text>
+  <text x="568" y="578" class="lbl okl">+ DNS</text>
+  <text x="808" y="560" class="lbl nol" text-anchor="end">host, LAN, other</text>
+  <text x="808" y="578" class="lbl nol" text-anchor="end">VMs: dropped</text>
+  <text x="978" y="527" class="lbl okl b" text-anchor="end">private_allow:</text>
+  <text x="978" y="545" class="lbl okl" text-anchor="end">only the services</text>
+  <text x="978" y="563" class="lbl okl" text-anchor="end">you list, both modes</text>
+
+  <!-- VMs -->
+  <rect x="60" y="640" width="400" height="150" rx="10" fill="#fff3c4" stroke="#d98200" stroke-width="2.5"/>
+  <text x="260" y="672" class="t b" text-anchor="middle">Proxy-only VM</text>
+  <text x="260" y="697" class="s" text-anchor="middle">sandbox1–99 · 10.248.0.1–99</text>
+  <text x="260" y="718" class="s" text-anchor="middle">(nftables set proxy_internet)</text>
+  <text x="260" y="745" class="s" text-anchor="middle">HTTP(S) through Squid only · no DNS</text>
+  <text x="260" y="766" class="s" text-anchor="middle">trusts the proxy's CA</text>
+
+  <rect x="640" y="640" width="400" height="150" rx="10" fill="#fff3c4" stroke="#d98200" stroke-width="2.5"/>
+  <text x="840" y="672" class="t b" text-anchor="middle">Direct VM</text>
+  <text x="840" y="697" class="s" text-anchor="middle">sandbox100–199 · 10.248.0.100–199</text>
+  <text x="840" y="718" class="s" text-anchor="middle">(nftables set direct_internet)</text>
+  <text x="840" y="745" class="s" text-anchor="middle">internet through NAT · DNS from nameservers</text>
+  <text x="840" y="766" class="s" text-anchor="middle">(a private resolver only if in private_dns)</text>
+
+  <!-- VMs isolated from each other -->
+  <path d="M460,715 L640,715" class="no"/>
+  <use href="#x" x="550" y="715"/>
+  <text x="550" y="748" class="lbl nol" text-anchor="middle">isolated</text>
+  <text x="550" y="766" class="lbl nol" text-anchor="middle">from each other</text>
+
+  <!-- Legend -->
+  <g transform="translate(60,825)">
+    <path d="M0,10 L48,10" class="ok" marker-end="url(#aok)"/>
+    <text x="58" y="15" class="lbl">allowed</text>
+    <path d="M150,10 L198,10" class="opt" marker-end="url(#aok)"/>
+    <text x="208" y="15" class="lbl">allowed only if listed in private_allow</text>
+    <path d="M500,10 L548,10" class="no"/>
+    <use href="#x" x="524" y="10"/>
+    <text x="558" y="15" class="lbl">dropped</text>
+    <text x="0" y="45" class="lbl">The host reaches every VM (you work in them over SSH); a VM reaches the host only for the proxy, a private_dns resolver, or what private_allow lists.</text>
+    <text x="0" y="67" class="lbl">Nothing else (the LAN, containers, VMs on other networks, VPN peers) can open a connection to a VM.</text>
+  </g>
+</svg>

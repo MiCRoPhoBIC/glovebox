@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Editor backups
+*~
+
+# Local configuration (see glovebox.toml.example, glovebox-packages.txt.example)
+/glovebox.toml
+/glovebox-packages.txt
+
+# host-setup and uninstall logs
+/logs/
