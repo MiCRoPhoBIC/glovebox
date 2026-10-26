@@ -49,7 +49,9 @@ you have.
 You need a Debian/Ubuntu or Arch-based host (CachyOS included) with
 hardware virtualization on, and an SSH key (`ssh-keygen -t ed25519` if you
 have none). The defaults need no configuration. Run everything as your
-normal user; glovebox calls `sudo` itself.
+normal user, with full sudo rights (the `sudo` group on Debian/Ubuntu,
+`wheel` on Arch); glovebox calls `sudo` itself and checks first that it
+works.
 
 Before the first `host-setup`, look at the sets in
 [`host-setup/nftables/glovebox.conf`](host-setup/nftables/glovebox.conf):
@@ -78,7 +80,7 @@ set up, close the provisioning allowlist; see
 
 | Command | What it does |
 | :-- | :-- |
-| `host-setup <part\|all>` | Set the host up: QEMU/KVM and libvirt, the network, the nftables rules, Squid, UFW rules on the bridge. Shows the plan, asks once, records every change. |
+| `host-setup <part\|all>` | Set the host up: QEMU/KVM and libvirt, the network, the nftables rules, Squid, UFW rules on the bridge. Shows the plan, asks once, records every change. Warns when nothing on the host filters the forwarding the sandboxes need, and offers the optional forward_guard. |
 | `host-check [--probe]` | Verify the host, now and after a reboot, and what else on it may block the sandboxes. `--probe` sends real traffic, no VM needed. |
 | `uninstall` | Undo every host change glovebox recorded (`host-setup`'s, and `create`'s image cache), newest first. |
 | `create <name>` | Create a sandbox VM from a cloud image, with its accounts, key, mode and optional provisioning. |

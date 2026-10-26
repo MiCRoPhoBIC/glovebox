@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -284,6 +285,31 @@ def is_private_address(ip, config):
 def require_not_root():
     if os.geteuid() == 0:
         die("Run as your normal user, not root. The script calls sudo itself.")
+
+
+SUDO_HELP = (
+    "glovebox runs its host commands through sudo, so your user needs full "
+    "sudo rights. Set them up first, as root (su -):\n"
+    "  Debian/Ubuntu: usermod -aG sudo {user}\n"
+    "  Arch/CachyOS:  usermod -aG wheel {user}, then in visudo enable the "
+    "line %wheel ALL=(ALL:ALL) ALL\n"
+    "Log out and back in (group changes apply to new sessions), then run "
+    "glovebox again.")
+
+
+def require_sudo():
+    """Check sudo works before anything runs: every command reads or changes
+    the host through it, and a refused sudo would otherwise look like a
+    missing file or an empty answer. sudo -v asks for the password once
+    (later calls reuse the cached credentials), or refuses a user without
+    sudo rights at once, without asking."""
+    user = getpass.getuser()
+    if not shutil.which("sudo"):
+        die("sudo is not installed; install it (as root: apt-get install "
+            "sudo, or pacman -S sudo). " + SUDO_HELP.format(user=user))
+    if subprocess.run(["sudo", "-v"]).returncode != 0:
+        die("sudo did not work for you (its message is above). "
+            + SUDO_HELP.format(user=user))
 
 
 # The guest account names a VM was created with, kept in its libvirt domain

@@ -8,12 +8,20 @@ step with its exact commands (and a diff of every file it replaces), and
 changes nothing until you answer yes. `--dry-run` only prints the plan;
 re-running it when everything is in place changes nothing.
 
+Run it, like every glovebox command, as your normal user with full sudo
+rights (the `sudo` group on Debian/Ubuntu, `wheel` on Arch). glovebox
+checks that first, with `sudo -v` (asking for your password once), and
+stops before doing anything if sudo is missing or refuses you, saying how
+to set it up.
+
 ```bash
 ./glovebox host-setup all --dry-run    # just show what it would do
 ./glovebox host-setup all              # all parts below, in this order
 ./glovebox host-setup virt             # QEMU/KVM, libvirt, create's tools
 ./glovebox host-setup network          # libvirt network + IP forwarding
 ./glovebox host-setup nftables         # the firewall rules, loaded at boot
+./glovebox host-setup nftables --forward-guard     # ...and limit forwarding
+./glovebox host-setup nftables --no-forward-guard  # ...or remove that limit
 ./glovebox host-setup squid            # the proxy, with its CA
 ./glovebox host-setup ufw              # UFW rules on the bridge, if needed
 ```
@@ -26,10 +34,15 @@ re-running it when everything is in place changes nothing.
   and libvirt's `clean-traffic` filter, which `create` uses against IP
   spoofing. On Arch it also installs `iptables` (the nft variant, which
   provides `ebtables`) and `dnsmasq`, which libvirt lists only as optional.
-- **network:** installs the sysctl drop-in and defines, starts and
-  autostarts the libvirt network. An existing network that differs is left
-  alone and reported. Needs libvirt, from `virt` in the same or an earlier
-  run.
+- **network:** installs the sysctl drop-in that turns IPv4 forwarding on,
+  and defines, starts and autostarts the libvirt network. An existing
+  network that differs is left alone and reported. Needs libvirt, from
+  `virt` in the same or an earlier run. Forwarding is host-wide, so the
+  plan says what it means on this host: whether it was on before, the
+  other interfaces the host could now route between, and whether the
+  host's own firewall filters forwarded traffic; a warning if nothing does
+  (see [IP forwarding and
+  forward_guard](how-it-works.md#ip-forwarding-and-forward_guard)).
 - **nftables:** checks the syntax, installs the rules as
   `/etc/glovebox/nftables.conf`, and loads them now and at boot with its
   own `glovebox-nftables.service`. `/etc/nftables.conf` isn't touched. The
@@ -41,6 +54,16 @@ re-running it when everything is in place changes nothing.
   `virsh`, virt-manager), and restarts libvirt so it finds the hook
   (running VMs keep running). Edit the sets in the repo's file and re-run
   to apply them.
+  **forward_guard** (optional): when nothing on the host filters forwarded
+  traffic and it isn't on yet, this part explains the situation and asks
+  whether to turn it on (a dry run only says it would ask). Turned on, it
+  installs `/etc/glovebox/forward-guard.d/forward-guard.conf`, which
+  `/etc/glovebox/nftables.conf` includes: the table `ip glovebox_guard`
+  drops forwarded IPv4 that neither comes from nor goes to `br-glovebox`.
+  It also stops Docker, other libvirt NAT networks and VPN routing on the
+  host from forwarding. `--forward-guard` turns it on and `--no-forward-guard`
+  removes it, without the question; without either, an existing
+  forward_guard is kept.
 - **squid:** installs Squid with OpenSSL (`squid-openssl` on Debian), creates
   the CA only if there is none (the VMs trust the existing one; valid
   `proxy_ca_days`, 10 years by default), the
@@ -101,6 +124,13 @@ and what else on it may get in the way. Exit code 1 on any FAIL.
   firewalld, Docker's `FORWARD DROP` policy (which drops direct-mode
   traffic), legacy iptables rules (invisible to `nft`), and every other
   nftables chain on the input and forward hooks.
+- **IP forwarding beyond the sandboxes:** what the host forwards apart from
+  the bridge. ok when its own firewall filters forwarded traffic (the
+  chains found are listed) or forward_guard is on; a warning when nothing
+  does, naming the interfaces it routes between; and a warning when
+  forward_guard is on while bridges or VPN tunnels on the host would route
+  through it. The live state also checks that forward_guard's table is
+  loaded exactly when its file is there.
 - **Journal:** files host-setup wrote that were edited or removed since.
 - **`--probe`:** attaches a temporary network namespace to `br-glovebox`
   and, from a free address of each mode (direct, proxy-only, neither),
@@ -129,6 +159,7 @@ already there before is left alone.
 - **Sandbox VMs:** it refuses while any exist. Delete them first.
 - **libvirt:** if host-setup started `libvirtd`, it asks before putting it
   back, and lists the other libvirt VMs on the host, which need it.
+- **forward_guard:** its file and table go with the rest.
 - **`ip_forward`:** set back to its value from before host-setup, also
   live. If Docker or another libvirt network started meanwhile, restart
   it afterwards, as it relies on forwarding.
@@ -164,7 +195,9 @@ On another distribution, or to do it by hand:
   [`gloveboxlib/hostsetup.py`](../gloveboxlib/hostsetup.py)) does both.
   Copy `host-setup/libvirt-hook/glovebox` to
   `/etc/libvirt/hooks/qemu.d/` (executable) and restart libvirt, so no
-  sandbox starts without the rules.
+  sandbox starts without the rules. For forward_guard, copy
+  `host-setup/nftables/forward-guard.conf` to
+  `/etc/glovebox/forward-guard.d/` and reload the rules.
 - **UFW** (if active): `sudo ufw route allow in on br-glovebox` and `sudo
   ufw allow in on br-glovebox to 10.248.0.254 port 3128 proto tcp` (UFW
   keeps them across reboots). Make

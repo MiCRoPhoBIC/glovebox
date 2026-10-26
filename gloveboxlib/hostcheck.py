@@ -29,9 +29,10 @@ from .config import config
 from .common import (capture, die, is_private_address, log, nft_set_contains,
                      nft_set_json, parse_n, private_allow_rules, read_root,
                      resolve_ip, resolve_subnet, root_exists)
-from .hostsetup import (CA_CRT, NFT_DEST, NFT_TABLES, NFT_UNIT, PARTS,
-                        PLANNERS, Plan, host_tool, package_manager,
-                        proxy_endpoint)
+from .hostsetup import (CA_CRT, GUARD_DEST, GUARD_TABLE, NFT_DEST, NFT_TABLES,
+                        NFT_UNIT, PARTS, PLANNERS, Plan, forward_filters,
+                        host_tool, ip_forward_on, other_interfaces,
+                        package_manager, proxy_endpoint)
 
 
 class Report:
@@ -82,10 +83,10 @@ def check_setup(report, pm):
 # --- 2. the live state ------------------------------------------------------------
 
 def nft_normalized(prefix):
-    """glovebox's tables as `nft -j` shows them, without handles; None for a
-    table that isn't loaded."""
+    """glovebox's tables (forward_guard's too) as `nft -j` shows them,
+    without handles; None for a table that isn't loaded."""
     out = {}
-    for t in NFT_TABLES:
+    for t in NFT_TABLES + (GUARD_TABLE,):
         r = capture(prefix + ["nft", "-j", "list", "table", *t])
         if r.returncode != 0:
             out[t] = None
@@ -151,6 +152,22 @@ def check_nft_loaded(report, rows):
                        + f". Reload: sudo systemctl restart {NFT_UNIT}")
         else:
             report.add(rows, "ok", f"table {name} is loaded as in {NFT_DEST}")
+    # forward_guard: optional, so loaded exactly when its file is there.
+    name = " ".join(GUARD_TABLE)
+    if have[GUARD_TABLE] == want[GUARD_TABLE]:
+        if want[GUARD_TABLE] is not None:
+            report.add(rows, "ok", f"table {name} (forward_guard) is loaded "
+                                   f"as in {GUARD_DEST}")
+    elif want[GUARD_TABLE] is None:
+        report.add(rows, "FAIL", f"table {name} (forward_guard) is loaded, "
+                                 f"but {GUARD_DEST} isn't there. Reload: "
+                                 f"sudo systemctl restart {NFT_UNIT}")
+    else:
+        report.add(rows, "FAIL", f"table {name} (forward_guard) is "
+                                 + ("not loaded" if have[GUARD_TABLE] is None
+                                    else "changed by hand")
+                                 + f", though {GUARD_DEST} is there. Reload: "
+                                   f"sudo systemctl restart {NFT_UNIT}")
 
 
 def check_live(report):
@@ -289,7 +306,7 @@ def check_other_firewalls(report):
     foreign = []
     for item in json.loads(r.stdout).get("nftables", []):
         c = item.get("chain")
-        if not c or c.get("table") == "glovebox" or c.get("hook") not in (
+        if not c or c.get("table") in ("glovebox", GUARD_TABLE[1]) or c.get("hook") not in (
                 "input", "forward"):
             continue
         foreign.append(f"{c['family']} {c['table']} {c['name']} "
@@ -301,7 +318,52 @@ def check_other_firewalls(report):
                                "forward hooks")
 
 
-# --- 5. the journal ---------------------------------------------------------------
+# --- 5. what else the host forwards ---------------------------------------------
+
+# Interfaces that forward through the host themselves: forward_guard stops
+# them.
+ROUTING_KINDS = ("bridge", "wireguard", "tun", "veth", "vxlan")
+
+
+def check_forwarding(report):
+    rows = report.section("IP forwarding beyond the sandboxes")
+    if not ip_forward_on():
+        report.add(rows, "info", "forwarding is off: the host routes nothing "
+                                 "(see Live state)")
+        return
+    ifaces = other_interfaces()
+    names = ", ".join(n for n, _ in ifaces) or "none"
+    guard = capture(["sudo", "nft", "list", "table",
+                     *GUARD_TABLE]).returncode == 0
+    if guard:
+        report.add(rows, "ok", f"forward_guard is on: the host forwards IPv4 "
+                               f"only to and from {config.bridge}")
+        routing = [n for n, kind in ifaces if kind in ROUTING_KINDS]
+        if routing:
+            report.add(rows, "warn", f"forward_guard also drops what these "
+                                     f"forward through the host: "
+                                     f"{', '.join(routing)} (Docker, other "
+                                     f"VM networks, VPNs?). If they should "
+                                     f"route: ./glovebox host-setup nftables "
+                                     f"--no-forward-guard")
+        return
+    filters = forward_filters()
+    if filters:
+        report.add(rows, "ok", f"the host's own firewall filters forwarded "
+                               f"traffic: {'; '.join(filters)}. What it "
+                               f"lets through between {names} is up to its "
+                               f"rules (not analyzed)")
+    else:
+        report.add(rows, "warn", f"nothing filters forwarded IPv4 except "
+                                 f"glovebox's rules for {config.bridge}: the "
+                                 f"host routes between {names} for whatever "
+                                 f"uses it as a gateway (a LAN device, a VPN "
+                                 f"peer). Filter forwarding in your firewall, "
+                                 f"or turn on forward_guard: ./glovebox "
+                                 f"host-setup nftables --forward-guard")
+
+
+# --- 6. the journal ---------------------------------------------------------------
 
 def check_journal(report):
     rows = report.section("Changed since host-setup (journal)")
@@ -619,6 +681,7 @@ def cmd_host_check(a):
     check_live(report)
     check_reboot(report)
     check_other_firewalls(report)
+    check_forwarding(report)
     check_journal(report)
     if a.probe:
         run_probe(report)

@@ -67,7 +67,8 @@ the host is `10.248.0.254`). The VM name sets its address: `sandbox<n>` gets
 </p>
 
 nftables rules in glovebox's own tables match only traffic from or to that
-bridge, so the rest of the host's firewall is left as it is. For each packet
+bridge, so the rest of the host's firewall is left as it is (the optional
+[forward_guard](#ip-forwarding-and-forward_guard) is the one exception). For each packet
 from a sandbox they decide, by its source IP (which `clean-traffic` pins):
 
 | Destination | Allowed when |
@@ -98,6 +99,38 @@ it, recreate the VM with a number from the other range. Proxy-only VMs get
 no DNS on purpose: the proxy resolves names, and DNS would be a tunnel
 around it.
 
+### IP forwarding and forward_guard
+
+The sandboxes reach the internet through NAT on the host, which needs
+`net.ipv4.ip_forward=1`. That switch is host-wide: it lets the host route
+IPv4 between *all* its interfaces, not only for the sandboxes. glovebox's
+rules cover only `br-glovebox`, so what else the host forwards is up to its
+own firewall. On a host with no rules for forwarded traffic (a fresh
+install, a relaxed `FORWARD ACCEPT`), anything that uses the host as its
+gateway, a device on the LAN or a VPN peer, gets routed between its other
+networks (a second LAN, a VPN, containers) without anyone noticing.
+
+So glovebox says what it finds, every time:
+
+- `host-setup network` explains, in the plan, whether forwarding was on
+  before, which other interfaces the host has, and whether the host's own
+  firewall filters forwarded traffic (a forward chain with a drop policy,
+  or one ending in a drop or reject, as firewalld's do; their other rules
+  are not analyzed). Without such a filter it shows a warning.
+- In that case `host-setup nftables` asks whether to turn on
+  **forward_guard**: a small table of its own (`ip glovebox_guard`) that
+  drops forwarded IPv4 neither coming from nor going to `br-glovebox`. If
+  forwarding was off before glovebox, that puts the rest of the host back
+  as it was. The cost: a drop there wins over any accept elsewhere, so
+  Docker, other libvirt NAT networks or VPN routing set up on the host
+  won't forward while it is on. `--forward-guard` / `--no-forward-guard`
+  turn it on or off without the question. IPv6 forwarding, which glovebox
+  doesn't turn on, is left alone.
+- `host-check` reports the same every run: ok if the host filters
+  forwarding or forward_guard is on, a warning if nothing does, and a
+  warning if forward_guard is on while the host has interfaces that route
+  through it (bridges, VPN tunnels).
+
 ## What it doesn't protect against
 
 - **The host's other traffic.** Sandboxes need `ip_forward=1`, which lets
@@ -105,7 +138,9 @@ around it.
   sandbox bridge (as with libvirt's default NAT network or Docker).
   glovebox filters only `br-glovebox`; if other devices could use your host
   as a gateway between its other networks (a VPN, a second LAN), the host's
-  own firewall has to stop that.
+  own firewall, or the optional forward_guard, has to stop that.
+  `host-setup` and `host-check` warn when nothing does; see
+  [IP forwarding and forward_guard](#ip-forwarding-and-forward_guard).
 - **The proxy is not data-loss prevention.** A proxy-only VM can reach only
   the allowlisted domains, but it can use them as it likes: an agent could
   send data to the Claude API under another API key. The allowlist limits
@@ -129,8 +164,10 @@ around it.
 1. **The host's firewall is left alone.** The host's own nftables ruleset
    and firewall stay as they are. glovebox's rules live in its own
    `glovebox` tables and match only traffic from or to the bridge
-   (`br-glovebox`). The one exception: on an active UFW, `host-setup` adds two
-   UFW rules scoped to `br-glovebox`, after showing them and getting a yes.
+   (`br-glovebox`). Two exceptions, both shown first and done only after a
+   yes: on an active UFW, `host-setup` adds two UFW rules scoped to
+   `br-glovebox`; and the optional forward_guard limits the host's IPv4
+   forwarding to the bridge.
 2. **The firewall decides, the guest follows.** A VM's mode is decided on
    the host, by its IP, in the nftables sets. Whatever happens inside the
    VM, it can't leave its mode. The IP is trustworthy because libvirt's
@@ -162,9 +199,10 @@ around it.
 | [`glovebox-packages.txt.example`](../glovebox-packages.txt.example) | Format of the optional extra-package list; copy it to `glovebox-packages.txt`. |
 | [`host-setup/libvirt-net/glovebox.xml`](../host-setup/libvirt-net/glovebox.xml) | The libvirt network: bridge and host address. |
 | [`host-setup/nftables/glovebox.conf`](../host-setup/nftables/glovebox.conf) | The firewall rules and their sets: `direct_internet`, `proxy_internet`, `private_dns`, `private_allow`. |
+| [`host-setup/nftables/forward-guard.conf`](../host-setup/nftables/forward-guard.conf) | The optional forward_guard: the host forwards IPv4 only to and from the bridge. |
 | [`host-setup/sysctl/99-glovebox.conf`](../host-setup/sysctl/99-glovebox.conf) | IPv4 forwarding. |
 | [`host-setup/squid/`](../host-setup/squid/) | `squid.conf` and the two domain allowlists for proxy-only VMs. |
-| [`provision/`](../provision/) | Example `--provision` scripts (Claude Code, a dev environment). |
+| [`provision/`](../provision/) | An example `--provision` script, `sample-dev-env.sh` (tmux, emacs, podman; runs as root). Claude Code is installed by `create --claude`, not by a script. |
 | [`gloveboxlib/`](../gloveboxlib/) | The implementation. |
 | [`docs/`](../docs/) | This documentation. |
 | [`SECURITY.md`](../SECURITY.md) | How to report a vulnerability, privately. |
@@ -176,6 +214,7 @@ What glovebox puts on the host (besides the packages host-setup installs);
 | Host path | From |
 | :-- | :-- |
 | `/etc/glovebox/nftables.conf`, `/etc/systemd/system/glovebox-nftables.service` | `host-setup/nftables/glovebox.conf` |
+| `/etc/glovebox/forward-guard.d/forward-guard.conf`, if you turn forward_guard on | `host-setup/nftables/forward-guard.conf` |
 | `/etc/libvirt/hooks/qemu.d/glovebox` | `host-setup/libvirt-hook/` |
 | `/etc/sysctl.d/99-glovebox.conf` | `host-setup/sysctl/` |
 | libvirt network `glovebox` | `host-setup/libvirt-net/` |

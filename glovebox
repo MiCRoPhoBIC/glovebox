@@ -15,8 +15,8 @@ from gloveboxlib import __version__
 from gloveboxlib.config import config
 from gloveboxlib import (check, hostcheck, hostsetup, manage, squid,
                          uninstall, vms)
-from gloveboxlib.common import (die, log, require_not_root, resolve_ip,
-                                resolve_subnet, validate_name)
+from gloveboxlib.common import (die, log, require_not_root, require_sudo,
+                                resolve_ip, resolve_subnet, validate_name)
 
 
 def parse_args():
@@ -119,6 +119,13 @@ def parse_args():
                         "or all")
     h.add_argument("--dry-run", action="store_true",
                    help="show the plan only, change nothing")
+    h.add_argument("--forward-guard", action=argparse.BooleanOptionalAction,
+                   help="nftables part: limit the host's IPv4 forwarding to "
+                        "the sandbox bridge, or remove that limit (also "
+                        "stops Docker, other libvirt NAT networks and VPN "
+                        "routing from forwarding). Without either, an "
+                        "existing setting is kept, and you're asked when "
+                        "nothing else on the host filters forwarded traffic")
 
     hc = sub.add_parser("host-check",
                         help="check that the host is set up as glovebox "
@@ -146,6 +153,7 @@ def parse_args():
 def main():
     require_not_root()
     a = parse_args()
+    require_sudo()
     if a.command in ("host-setup", "host-check", "uninstall", "list"):
         a.run(a)
         return

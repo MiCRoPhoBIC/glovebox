@@ -15,6 +15,7 @@ it only adds rules on the sandbox bridge.
 import atexit
 import difflib
 import ipaddress
+import json
 import os
 import re
 import shlex
@@ -40,6 +41,7 @@ SRC = os.path.join(REPO, "host-setup")
 NET_XML = os.path.join(SRC, "libvirt-net", "glovebox.xml")
 SYSCTL_SRC = os.path.join(SRC, "sysctl", "99-glovebox.conf")
 NFT_SRC = os.path.join(SRC, "nftables", "glovebox.conf")
+GUARD_SRC = os.path.join(SRC, "nftables", "forward-guard.conf")
 HOOK_SRC = os.path.join(SRC, "libvirt-hook", "glovebox")
 SQUID_SRC = os.path.join(SRC, "squid")
 
@@ -47,6 +49,10 @@ SYSCTL_DEST = "/etc/sysctl.d/99-glovebox.conf"
 NFT_DEST = "/etc/glovebox/nftables.conf"
 NFT_UNIT = "glovebox-nftables.service"
 NFT_TABLES = (("inet", "glovebox"), ("ip", "glovebox"), ("bridge", "glovebox"))
+# forward_guard (optional): NFT_DEST includes whatever is in GUARD_DIR.
+GUARD_DIR = "/etc/glovebox/forward-guard.d"
+GUARD_DEST = f"{GUARD_DIR}/forward-guard.conf"
+GUARD_TABLE = ("ip", "glovebox_guard")
 # A directory of hooks (libvirt 6.5+), so a qemu hook of the user's own
 # stays as it is.
 HOOK_DEST = "/etc/libvirt/hooks/qemu.d/glovebox"
@@ -145,6 +151,8 @@ class Plan:
         self.parts = parts
         self.apt_updated = False
         self.libvirt_pending = False  # the virt part installs/starts libvirt
+        self.interactive = False  # may ask while planning (not a dry run)
+        self.forward_guard = None  # --forward-guard / --no-forward-guard
         self.sections = []  # (title, steps, notes)
         self.staged = 0
         self.stage_dir = tempfile.mkdtemp(prefix="glovebox-host-setup-")
@@ -332,6 +340,106 @@ def plan_virt(plan, pm):
 
 # --- network: libvirt network + IP forwarding --------------------------------
 
+# Verdicts a chain may end with, after at most a counter or a log, to count
+# as filtering (firewalld ends its chains with a reject, policy accept).
+FINAL_DROP = {"drop", "reject"}
+
+
+def forward_filters():
+    """The host's own chains (not glovebox's) that filter forwarded IPv4:
+    a drop policy, or a last rule that drops or rejects whatever reaches it.
+    A heuristic: what they let through is up to their other rules."""
+    found = []
+    if host_tool("nft"):
+        r = capture(["sudo", "nft", "-j", "list", "ruleset"])
+        items = json.loads(r.stdout).get("nftables", []) if r.returncode == 0 else []
+        last = {}
+        for item in items:
+            if "rule" in item:
+                rule = item["rule"]
+                last[rule["family"], rule["table"], rule["chain"]] = rule["expr"]
+        for item in items:
+            c = item.get("chain")
+            if not c or c.get("hook") != "forward" or c["family"] not in (
+                    "ip", "inet") or c["table"] in ("glovebox", GUARD_TABLE[1]):
+                continue
+            expr = [next(iter(x)) for x in last.get(
+                (c["family"], c["table"], c["name"]), [])]
+            if c.get("policy") == "drop":
+                found.append(f"{c['family']} {c['table']} {c['name']} "
+                             f"(policy drop)")
+            elif expr and expr[-1] in FINAL_DROP and set(expr[:-1]) <= {
+                    "counter", "log"}:
+                found.append(f"{c['family']} {c['table']} {c['name']} "
+                             f"(ends with {expr[-1]})")
+    elif host_tool("iptables"):
+        # No nft (yet) to read the ruleset with; iptables-nft shows its part.
+        if "-P FORWARD DROP" in capture(["sudo", "iptables", "-S",
+                                         "FORWARD"]).stdout:
+            found.append("iptables FORWARD (policy DROP)")
+    if host_tool("iptables-legacy-save"):
+        legacy = capture(["sudo", "iptables-legacy-save", "-t", "filter"]).stdout
+        if re.search(r"^:FORWARD DROP", legacy, re.M):
+            found.append("legacy iptables FORWARD (policy DROP)")
+    return found
+
+
+def other_interfaces():
+    """The host's network interfaces apart from loopback, the sandbox
+    bridge and what is attached to it (the VMs' tap devices): what the host
+    may route between once forwarding is on. (name, kind) pairs."""
+    r = capture(["ip", "-j", "-d", "link", "show"])
+    out = []
+    for link in json.loads(r.stdout or "[]"):
+        name = link.get("ifname", "")
+        if name in ("lo", config.bridge) or link.get("master") == config.bridge:
+            continue
+        out.append((name, link.get("linkinfo", {}).get("info_kind", "")))
+    return out
+
+
+def ip_forward_on():
+    with open("/proc/sys/net/ipv4/ip_forward") as f:
+        return f.read().strip() == "1"
+
+
+def guard_installed():
+    return root_exists(GUARD_DEST)
+
+
+def forward_explanation(filters, guard):
+    """What turning forwarding on means on this host, for the plan and
+    the forward_guard question. First line: the verdict."""
+    names = ", ".join(n for n, _ in other_interfaces()) or "none"
+    was = "on already" if ip_forward_on() else "off until now"
+    common = (f"The sandboxes need net.ipv4.ip_forward=1 (on this host: "
+              f"{was}). It lets the host route IPv4 between all its "
+              f"interfaces, not only for the sandboxes; glovebox's rules "
+              f"cover only {config.bridge}. Other interfaces here: {names}.")
+    if guard:
+        return (f"IP forwarding: limited to {config.bridge} by forward_guard.\n"
+                f"    {common} forward_guard drops forwarded IPv4 that "
+                f"neither comes from nor goes to {config.bridge}, which also "
+                f"stops Docker, other libvirt NAT networks or VPN routing "
+                f"here (turn it off with --no-forward-guard).")
+    if filters:
+        return (f"IP forwarding: your firewall filters forwarded traffic "
+                f"({'; '.join(filters)}).\n"
+                f"    {common} What else the host forwards is up to those "
+                f"rules (found by their drop policy or final drop/reject; "
+                f"their other rules are not analyzed).")
+    return (f"WARNING: nothing on this host filters forwarded traffic.\n"
+            f"    {common} With no firewall rules for forwarding, whatever "
+            f"uses this host as its gateway (a device on the LAN, a VPN "
+            f"peer) gets routed between those interfaces, without you "
+            f"noticing. Either filter forwarding in your own firewall, or "
+            f"turn on forward_guard: glovebox then drops forwarded IPv4 "
+            f"that neither comes from nor goes to {config.bridge}. Its cost: "
+            f"Docker, other libvirt NAT networks or VPN routing set up on "
+            f"this host later won't forward until you turn it off "
+            f"(./glovebox host-setup nftables --no-forward-guard).")
+
+
 def plan_network(plan, pm):
     steps, notes = plan.section("network: libvirt network and IP forwarding")
     net = ET.parse(NET_XML).getroot()
@@ -363,12 +471,18 @@ def plan_network(plan, pm):
         "Turn on IPv4 forwarding at boot: the sandboxes reach the internet "
         "through NAT on the host.",
         SYSCTL_DEST, read_repo(SYSCTL_SRC))
-    with open("/proc/sys/net/ipv4/ip_forward") as f:
-        forwarding = f.read().strip() == "1"
-    if changed or not forwarding:
+    if changed or not ip_forward_on():
         steps.append(Step(f"Turn on IPv4 forwarding now, from {SYSCTL_DEST}.",
                           [["sudo", "sysctl", "-p", SYSCTL_DEST]],
                           hooks=[sysctl_hook("net.ipv4.ip_forward")]))
+    guard = guard_installed()
+    filters = forward_filters()
+    notes.append(forward_explanation(filters, guard))
+    if not guard and not filters:
+        notes.append("forward_guard is decided in the nftables part"
+                     + (" below." if "nftables" in plan.parts else
+                        ": ./glovebox host-setup nftables (asks), or with "
+                        "--forward-guard / --no-forward-guard."))
 
     if net_name not in networks:
         steps.append(Step(
@@ -426,9 +540,16 @@ def plan_nftables(plan, pm):
         problems.append(f"nftables PROXY_ADDR:PROXY_PORT {defines.get('PROXY_ADDR')}"
                         f":{defines.get('PROXY_PORT')}, the config proxy "
                         f"{config.proxy}")
+    guard_text = read_repo(GUARD_SRC)
+    guard_dev = re.search(r'^define\s+GUARD_DEV\s*=\s*"?([^"\s]+)', guard_text, re.M)
+    if not guard_dev or guard_dev.group(1) != config.bridge:
+        problems.append(f"nftables/forward-guard.conf GUARD_DEV "
+                        f"{guard_dev.group(1) if guard_dev else '?'}, the "
+                        f"config bridge {config.bridge}")
     require_consistent(problems)
 
     package_steps(plan, pm, "nftables", steps)
+    guard = want_forward_guard(plan, notes)
     steps.append(Step(f"Check the syntax of {os.path.relpath(NFT_SRC, REPO)} "
                       f"(changes nothing).",
                       [["sudo", "nft", "-c", "-f", NFT_SRC]], check=True))
@@ -438,6 +559,25 @@ def plan_nftables(plan, pm):
         "only traffic from the bridge, so the host's other rules stay as "
         "they are. Edit the sets in the repo and re-run to change them.",
         NFT_DEST, text)
+    if guard:
+        steps.append(Step(f"Check the syntax of "
+                          f"{os.path.relpath(GUARD_SRC, REPO)} (changes "
+                          f"nothing).", [["sudo", "nft", "-c", "-f", GUARD_SRC]],
+                          check=True))
+        changed |= file_step(
+            plan, steps, notes,
+            f"Install forward_guard: the host forwards IPv4 only to and from "
+            f"{config.bridge}. Unlike the rules above, this affects the "
+            f"host's other traffic: Docker, other libvirt NAT networks or "
+            f"VPN routing here won't forward while it is on "
+            f"(--no-forward-guard removes it).",
+            GUARD_DEST, guard_text)
+    elif guard_installed():
+        changed = True
+        steps.append(Step(
+            f"Remove forward_guard ({GUARD_DEST}): the host forwards IPv4 "
+            f"between all its interfaces again, as far as its own firewall "
+            f"lets it.", [["sudo", "rm", "-f", GUARD_DEST]]))
     changed |= file_step(
         plan, steps, notes,
         f"Install {NFT_UNIT}, which loads the rules at boot, before the "
@@ -447,7 +587,9 @@ def plan_nftables(plan, pm):
     active, enabled = unit_state(NFT_UNIT)
     loaded = capture(["sudo", "nft", "list", "table", "inet",
                       "glovebox"]).returncode == 0
-    if changed or not (active and enabled and loaded):
+    guard_loaded = capture(["sudo", "nft", "list", "table",
+                            *GUARD_TABLE]).returncode == 0
+    if changed or not (active and enabled and loaded) or guard != guard_loaded:
         steps.append(Step(
             "Load the rules now and at every boot. The file replaces "
             "glovebox's tables in one transaction, so there's no moment "
@@ -455,7 +597,9 @@ def plan_nftables(plan, pm):
             [["sudo", "systemctl", "daemon-reload"],
              ["sudo", "systemctl", "enable", NFT_UNIT],
              ["sudo", "systemctl", "restart", NFT_UNIT]],
-            hooks=[service_hook(NFT_UNIT), nft_tables_hook(NFT_TABLES)]))
+            hooks=[service_hook(NFT_UNIT),
+                   nft_tables_hook(NFT_TABLES + ((GUARD_TABLE,) if guard
+                                                 else ()))]))
     else:
         notes.append("The rules are loaded and load at boot.")
 
@@ -486,6 +630,37 @@ def plan_nftables(plan, pm):
     for path in r.stdout.split():
         notes.append(f"{path} also loads or mentions glovebox's rules. "
                      f"Remove that, so only one copy applies: {NFT_DEST}.")
+
+
+def want_forward_guard(plan, notes):
+    """Whether forward_guard should be on after this run: as the flag says,
+    else as it is; but when it's off and nothing on the host filters
+    forwarded traffic, the reason is shown and the question asked."""
+    installed = guard_installed()
+    want = plan.forward_guard
+    if want is None and not installed and not forward_filters():
+        if not plan.interactive:
+            notes.append("forward_guard is off and nothing on this host "
+                         "filters forwarded traffic: the real run asks "
+                         "whether to turn it on (or pass --forward-guard / "
+                         "--no-forward-guard).")
+            return False
+        print("\n" + forward_explanation([], False) + "\n")
+        want = ask(f"Turn on forward_guard (limit the host's IPv4 "
+                   f"forwarding to {config.bridge})?")
+        if not want:
+            notes.append("forward_guard stays off (your answer): nothing "
+                         "filters the host's other forwarded traffic, and "
+                         "host-check warns about it. Turn it on later with "
+                         "./glovebox host-setup nftables --forward-guard, or "
+                         "pass --no-forward-guard not to be asked.")
+    if want is None:
+        want = installed
+    if want and installed:
+        notes.append(f"forward_guard is on: the host forwards IPv4 only to "
+                     f"and from {config.bridge} (--no-forward-guard removes "
+                     f"it).")
+    return want
 
 
 # --- squid ----------------------------------------------------------------------
@@ -924,7 +1099,12 @@ def cmd_host_setup(a):
     parts = [p for p in PARTS if p in a.parts or "all" in a.parts]
     pm = package_manager()
     log(f"Package manager: {pm}. Reading the host's current state (sudo)...")
+    if a.forward_guard is not None and "nftables" not in parts:
+        die("--forward-guard and --no-forward-guard belong to the nftables "
+            "part: ./glovebox host-setup nftables --forward-guard (or all).")
     plan = Plan(parts)
+    plan.interactive = not a.dry_run
+    plan.forward_guard = a.forward_guard
     for part in parts:
         PLANNERS[part](plan, pm)
     if not confirm(plan, a):
