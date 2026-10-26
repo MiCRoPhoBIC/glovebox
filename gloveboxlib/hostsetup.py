@@ -87,7 +87,8 @@ PACKAGES = {
 
 NFT_UNIT_TEXT = f"""\
 # Installed by glovebox host-setup. Loads only glovebox's own tables
-# (inet/ip/bridge glovebox); the rest of the host's ruleset is untouched.
+# (inet/ip/bridge glovebox, and ip glovebox_guard if forward_guard is on);
+# the rest of the host's ruleset is untouched.
 [Unit]
 Description=glovebox containment rules (nftables tables glovebox)
 DefaultDependencies=no

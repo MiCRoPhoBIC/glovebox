@@ -63,7 +63,7 @@ git clone https://github.com/MiCRoPhoBIC/glovebox.git
 cd glovebox
 
 ./glovebox host-setup all --dry-run   # read the plan
-./glovebox host-setup all             # set the host up (asks once)
+./glovebox host-setup all             # set the host up (asks first)
 ./glovebox host-check                 # verify it
 
 ./glovebox create sandbox5 --claude            # with Claude Code, for the agent
@@ -80,7 +80,7 @@ set up, close the provisioning allowlist; see
 
 | Command | What it does |
 | :-- | :-- |
-| `host-setup <part\|all>` | Set the host up: QEMU/KVM and libvirt, the network, the nftables rules, Squid, UFW rules on the bridge. Shows the plan, asks once, records every change. Warns when nothing on the host filters the forwarding the sandboxes need, and offers the optional forward_guard. |
+| `host-setup <part\|all>` | Set the host up: QEMU/KVM and libvirt, the network, the nftables rules, Squid, UFW rules on the bridge. Shows the plan and asks before changing anything, records every change. Warns when nothing on the host filters the forwarding the sandboxes need, and then also asks about the optional forward_guard. |
 | `host-check [--probe]` | Verify the host, now and after a reboot, and what else on it may block the sandboxes. `--probe` sends real traffic, no VM needed. |
 | `uninstall` | Undo every host change glovebox recorded (`host-setup`'s, and `create`'s image cache), newest first. |
 | `create <name>` | Create a sandbox VM from a cloud image, with its accounts, key, mode and optional provisioning. |
